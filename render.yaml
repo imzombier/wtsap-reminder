@@ -29,5 +29,5 @@ services:
       - key: PAYMENT_LINK
         value: "https://payments.example.com"
       - key: WAHA_API_URL
-        value: "https://waha.onrender.com/api/sendText"
+        value: "https://waha-wss4.onrender.com/api/sendText"
     plan: free
