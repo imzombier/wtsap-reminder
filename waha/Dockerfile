@@ -1,0 +1,1 @@
+FROM devlikeapro/waha:latest
