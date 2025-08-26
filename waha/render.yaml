@@ -23,9 +23,9 @@ services:
       - key: BOT_TOKEN
         sync: false   # set in Render Dashboard
       - key: ADMIN_ID
-        value: "123456789"
+        value: "7743703095"
       - key: LOG_CHANNEL_ID
-        value: "-1001234567890"
+        value: "-1002596681166"
       - key: PAYMENT_LINK
         value: "https://payments.example.com"
       - key: WAHA_API_URL
