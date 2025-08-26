@@ -6,7 +6,7 @@ import pandas as pd
 import requests
 from pathlib import Path
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from telegram import Bot
+from telegram import Bot, Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
 # ---------------- CONFIG ----------------
@@ -72,19 +72,20 @@ def send_whatsapp(mobile, message):
         return {"error": str(e)}
 
 # ---------------- BOT HANDLERS ----------------
-async def start(update, context: ContextTypes.DEFAULT_TYPE):
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("⛔ You are not authorized to use this bot.")
         return
     await update.message.reply_text("✅ Welcome Admin! Please send me the Excel file (.xlsx).")
 
-async def handle_file(update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("⛔ You are not authorized.")
         return
-    
-    file = await update.message.document.get_file()
-    filepath = TEMP_DIR / file.file_name
+
+    document = update.message.document
+    file = await document.get_file()
+    filepath = TEMP_DIR / document.file_name  # <-- fixed for PTB v20+
     await file.download_to_drive(custom_path=str(filepath))
     await update.message.reply_text("📂 File received. Processing...")
 
@@ -98,7 +99,7 @@ async def handle_file(update, context: ContextTypes.DEFAULT_TYPE):
         for i, row in df.iterrows():
             try:
                 mobile_num = clean_mobile(row.get("mobile no"))
-                if not mobile_num: 
+                if not mobile_num:
                     skip_count += 1
                     continue
 
@@ -155,13 +156,11 @@ def run_server():
 
 # ---------------- MAIN ----------------
 def main():
-    from telegram.ext import ApplicationBuilder
-
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.Document.FileExtension("xlsx"), handle_file))
 
-    # Run the dummy HTTP server in a separate thread
+    # Start dummy HTTP server for Render Web Service
     threading.Thread(target=run_server, daemon=True).start()
 
     print("🤖 Bot running with polling...")
