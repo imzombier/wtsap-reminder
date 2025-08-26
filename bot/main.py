@@ -5,7 +5,7 @@ import threading
 import pandas as pd
 import requests
 from pathlib import Path
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from flask import Flask, request
 from telegram import Bot, Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
@@ -26,6 +26,7 @@ PORT = int(os.environ.get("PORT", 5000))  # Render provides this automatically
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 bot = Bot(BOT_TOKEN)
+app_flask = Flask(__name__)
 
 # ---------------- HELPERS ----------------
 def to_num(x):
@@ -69,12 +70,11 @@ def send_whatsapp(mobile, message):
     try:
         response = requests.post(WAHA_API_URL, json=payload, headers=headers)
         result = response.json()
-        print(f"WAHA response for {mobile}: {result}")  # DEBUG
+        logging.info(f"WAHA response for {mobile}: {result}")
         return result
     except Exception as e:
-        print(f"WAHA error for {mobile}: {e}")
+        logging.error(f"WAHA error for {mobile}: {e}")
         return {"error": str(e)}
-
 
 # ---------------- BOT HANDLERS ----------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -90,7 +90,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     document = update.message.document
     file = await document.get_file()
-    filepath = TEMP_DIR / document.file_name  # <-- fixed for PTB v20+
+    filepath = TEMP_DIR / document.file_name
     await file.download_to_drive(custom_path=str(filepath))
     await update.message.reply_text("📂 File received. Processing...")
 
@@ -111,10 +111,6 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 od = to_num(row.get("over due"))
                 edi_amt = to_num(row.get("edi amount"))
                 adv_amt = to_num(row.get("advance"))
-
-                if od <= 0:
-                    skip_count += 1
-                    continue
 
                 payable = (edi_amt + od - adv_amt)
                 if payable <= 0:
@@ -142,34 +138,31 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         summary = f"✅ Finished sending.\n📩 Sent: {sent_count}\n⏭️ Skipped: {skip_count}"
         await update.message.reply_text(summary)
-        await context.bot.send_message(chat_id=LOG_CHANNEL_ID, text="\n".join(log_lines), parse_mode="Markdown")
+        await bot.send_message(chat_id=LOG_CHANNEL_ID, text="\n".join(log_lines), parse_mode="Markdown")
 
     except Exception as e:
         await update.message.reply_text(f"❌ Error processing file: {e}")
 
-# ---------------- DUMMY HTTP SERVER ----------------
-class DummyHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Bot is running")
+# ---------------- FLASK WEBHOOK ----------------
+@app_flask.route(f"/{BOT_TOKEN}", methods=["POST"])
+def webhook():
+    update = Update.de_json(request.get_json(force=True), bot)
+    import asyncio
+    asyncio.run(handle_update(update))
+    return "OK"
 
-def run_server():
-    httpd = HTTPServer(("0.0.0.0", PORT), DummyHandler)
-    print(f"Web server running on port {PORT}")
-    httpd.serve_forever()
-
-# ---------------- MAIN ----------------
-def main():
+async def handle_update(update):
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.Document.FileExtension("xlsx"), handle_file))
+    await app.update_queue.put(update)
+    await app.process_update(update)
 
-    # Start dummy HTTP server for Render Web Service
-    threading.Thread(target=run_server, daemon=True).start()
+# ---------------- DUMMY HTTP SERVER FOR RENDER ----------------
+@app_flask.route("/", methods=["GET"])
+def home():
+    return "Bot is running ✅"
 
-    print("🤖 Bot running with polling...")
-    app.run_polling()
-
+# ---------------- MAIN ----------------
 if __name__ == "__main__":
-    main()
+    app_flask.run(host="0.0.0.0", port=PORT)
