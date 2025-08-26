@@ -1,0 +1,33 @@
+services:
+  - type: web
+    name: waha
+    env: docker
+    dockerfilePath: ./waha/Dockerfile
+    envVars:
+      - key: WAHA_API_KEY
+        value: supersecret
+      - key: WAHA_DASHBOARD_ENABLED
+        value: true
+      - key: WAHA_DASHBOARD_USERNAME
+        value: admin
+      - key: WAHA_DASHBOARD_PASSWORD
+        value: admin123
+    plan: free
+
+  - type: worker
+    name: telegram-bot
+    env: python
+    buildCommand: pip install -r bot/requirements.txt
+    startCommand: python bot/main.py
+    envVars:
+      - key: BOT_TOKEN
+        sync: false   # set in Render Dashboard
+      - key: ADMIN_ID
+        value: "7743703095"
+      - key: LOG_CHANNEL_ID
+        value: "-1002596681166"
+      - key: PAYMENT_LINK
+        value: "https://payments.example.com"
+      - key: WAHA_API_URL
+        value: "https://waha.onrender.com/api/sendText"
+    plan: free
