@@ -1,30 +1,31 @@
 import os
 import re
 import logging
+import threading
 import pandas as pd
 import requests
 from pathlib import Path
-from flask import Flask, request
-from telegram import Bot, Update
-from telegram.ext import ApplicationBuilder, ContextTypes
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from telegram import Bot
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
 # ---------------- CONFIG ----------------
 ADMIN_ID = int(os.getenv("ADMIN_ID", "123456789"))
 LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", "-1001234567890"))
 PAYMENT_LINK = os.getenv("PAYMENT_LINK", "https://payments.example.com")
 WAHA_API_URL = os.getenv("WAHA_API_URL", "https://waha-xxxx.onrender.com/api/sendText")
-TEMP_DIR = Path("uploads")
-TEMP_DIR.mkdir(exist_ok=True)
-
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN not set")
 
-bot = Bot(BOT_TOKEN)
-app_flask = Flask(__name__)
+TEMP_DIR = Path("uploads")
+TEMP_DIR.mkdir(exist_ok=True)
+
 PORT = int(os.environ.get("PORT", 5000))  # Render provides this automatically
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
+bot = Bot(BOT_TOKEN)
 
 # ---------------- HELPERS ----------------
 def to_num(x):
@@ -70,89 +71,101 @@ def send_whatsapp(mobile, message):
     except Exception as e:
         return {"error": str(e)}
 
-# ---------------- WEBHOOK HANDLER ----------------
-@app_flask.route(f"/{BOT_TOKEN}", methods=["POST"])
-def webhook():
-    update_data = request.json
-    update = Update.de_json(update_data, bot)
+# ---------------- BOT HANDLERS ----------------
+async def start(update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("⛔ You are not authorized to use this bot.")
+        return
+    await update.message.reply_text("✅ Welcome Admin! Please send me the Excel file (.xlsx).")
+
+async def handle_file(update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("⛔ You are not authorized.")
+        return
     
-    user_id = update.effective_user.id if update.effective_user else None
+    file = await update.message.document.get_file()
+    filepath = TEMP_DIR / file.file_name
+    await file.download_to_drive(custom_path=str(filepath))
+    await update.message.reply_text("📂 File received. Processing...")
 
-    # /start command
-    if update.message and update.message.text == "/start":
-        if user_id != ADMIN_ID:
-            bot.send_message(chat_id=update.effective_chat.id, text="⛔ You are not authorized to use this bot.")
-        else:
-            bot.send_message(chat_id=update.effective_chat.id, text="✅ Welcome Admin! Please send me the Excel file (.xlsx).")
-        return {"ok": True}
+    try:
+        df = pd.read_excel(filepath, header=0)
+        df = df.rename(columns=lambda x: str(x).replace("\xa0"," ").strip().lower())
 
-    # Excel file handler
-    if update.message and update.message.document:
-        if user_id != ADMIN_ID:
-            bot.send_message(chat_id=update.effective_chat.id, text="⛔ You are not authorized.")
-            return {"ok": True}
-        
-        file = bot.get_file(update.message.document.file_id)
-        filepath = TEMP_DIR / update.message.document.file_name
-        file.download(custom_path=str(filepath))
-        bot.send_message(chat_id=update.effective_chat.id, text="📂 File received. Processing...")
+        sent_count, skip_count = 0, 0
+        log_lines = ["📊 *WhatsApp Sending Report*"]
 
-        try:
-            df = pd.read_excel(filepath, header=0)
-            df = df.rename(columns=lambda x: str(x).replace("\xa0"," ").strip().lower())
-
-            sent_count, skip_count = 0, 0
-            log_lines = ["📊 *WhatsApp Sending Report*"]
-
-            for i, row in df.iterrows():
-                try:
-                    mobile_num = clean_mobile(row.get("mobile no"))
-                    if not mobile_num: 
-                        skip_count += 1
-                        continue
-
-                    od = to_num(row.get("over due"))
-                    edi_amt = to_num(row.get("edi amount"))
-                    adv_amt = to_num(row.get("advance"))
-
-                    if od <= 0:
-                        skip_count += 1
-                        continue
-
-                    payable = (edi_amt + od - adv_amt)
-                    if payable <= 0:
-                        skip_count += 1
-                        continue
-
-                    msg = build_msg(
-                        row.get("customer name") or "Customer",
-                        row.get("loan a/c no") or "—",
-                        adv_amt, edi_amt, od, payable,
-                        PAYMENT_LINK
-                    )
-                    resp = send_whatsapp(mobile_num, msg)
-
-                    if "error" in resp:
-                        log_lines.append(f"❌ {row.get('customer name')} | {mobile_num} | Error: {resp['error']}")
-                        skip_count += 1
-                    else:
-                        sent_count += 1
-                        log_lines.append(f"✅ {row.get('customer name')} | {mobile_num} | Sent")
-
-                except Exception as e:
-                    log_lines.append(f"❌ {row.get('customer name')} | {row.get('mobile no')} | Error: {e}")
+        for i, row in df.iterrows():
+            try:
+                mobile_num = clean_mobile(row.get("mobile no"))
+                if not mobile_num: 
                     skip_count += 1
+                    continue
 
-            summary = f"✅ Finished sending.\n📩 Sent: {sent_count}\n⏭️ Skipped: {skip_count}"
-            bot.send_message(chat_id=update.effective_chat.id, text=summary)
-            bot.send_message(chat_id=LOG_CHANNEL_ID, text="\n".join(log_lines), parse_mode="Markdown")
+                od = to_num(row.get("over due"))
+                edi_amt = to_num(row.get("edi amount"))
+                adv_amt = to_num(row.get("advance"))
 
-        except Exception as e:
-            bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Error processing file: {e}")
+                if od <= 0:
+                    skip_count += 1
+                    continue
 
-    return {"ok": True}
+                payable = (edi_amt + od - adv_amt)
+                if payable <= 0:
+                    skip_count += 1
+                    continue
 
-# ---------------- RUN SERVER ----------------
+                msg = build_msg(
+                    row.get("customer name") or "Customer",
+                    row.get("loan a/c no") or "—",
+                    adv_amt, edi_amt, od, payable,
+                    PAYMENT_LINK
+                )
+                resp = send_whatsapp(mobile_num, msg)
+
+                if "error" in resp:
+                    log_lines.append(f"❌ {row.get('customer name')} | {mobile_num} | Error: {resp['error']}")
+                    skip_count += 1
+                else:
+                    sent_count += 1
+                    log_lines.append(f"✅ {row.get('customer name')} | {mobile_num} | Sent")
+
+            except Exception as e:
+                log_lines.append(f"❌ {row.get('customer name')} | {row.get('mobile no')} | Error: {e}")
+                skip_count += 1
+
+        summary = f"✅ Finished sending.\n📩 Sent: {sent_count}\n⏭️ Skipped: {skip_count}"
+        await update.message.reply_text(summary)
+        await context.bot.send_message(chat_id=LOG_CHANNEL_ID, text="\n".join(log_lines), parse_mode="Markdown")
+
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error processing file: {e}")
+
+# ---------------- DUMMY HTTP SERVER ----------------
+class DummyHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is running")
+
+def run_server():
+    httpd = HTTPServer(("0.0.0.0", PORT), DummyHandler)
+    print(f"Web server running on port {PORT}")
+    httpd.serve_forever()
+
+# ---------------- MAIN ----------------
+def main():
+    from telegram.ext import ApplicationBuilder
+
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.Document.FileExtension("xlsx"), handle_file))
+
+    # Run the dummy HTTP server in a separate thread
+    threading.Thread(target=run_server, daemon=True).start()
+
+    print("🤖 Bot running with polling...")
+    app.run_polling()
+
 if __name__ == "__main__":
-    print(f"🤖 Bot running on port {PORT}...")
-    app_flask.run(host="0.0.0.0", port=PORT)
+    main()
