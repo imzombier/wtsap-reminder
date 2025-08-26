@@ -71,10 +71,17 @@ def send_whatsapp(mobile, message):
         response = requests.post(WAHA_API_URL, json=payload, headers=headers)
         result = response.json()
         logging.info(f"WAHA response for {mobile}: {result}")
-        return result
+
+        # Check actual sending status
+        if result.get("sent") is True:
+            return {"success": True}
+        else:
+            return {"error": result.get("error", "Unknown error")}
+
     except Exception as e:
         logging.error(f"WAHA error for {mobile}: {e}")
         return {"error": str(e)}
+
 
 # ---------------- BOT HANDLERS ----------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
