@@ -65,11 +65,16 @@ def build_msg(name, loan_no, advance, edi, overdue, payable, link):
 
 def send_whatsapp(mobile, message):
     payload = {"chatId": f"{mobile}@c.us", "text": message}
+    headers = {"x-api-key": os.getenv("WAHA_API_KEY")}
     try:
-        response = requests.post(WAHA_API_URL, json=payload)
-        return response.json()
+        response = requests.post(WAHA_API_URL, json=payload, headers=headers)
+        result = response.json()
+        print(f"WAHA response for {mobile}: {result}")  # DEBUG
+        return result
     except Exception as e:
+        print(f"WAHA error for {mobile}: {e}")
         return {"error": str(e)}
+
 
 # ---------------- BOT HANDLERS ----------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
