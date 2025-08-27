@@ -1,13 +1,13 @@
 import os
 import re
 import logging
+import threading
 import pandas as pd
 import requests
 from pathlib import Path
 from flask import Flask, request
 from telegram import Bot, Update
-from telegram.ext import Application, ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
-import asyncio
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
 # ---------------- CONFIG ----------------
 ADMIN_ID = int(os.getenv("ADMIN_ID", "123456789"))
@@ -21,7 +21,7 @@ if not BOT_TOKEN:
 TEMP_DIR = Path("uploads")
 TEMP_DIR.mkdir(exist_ok=True)
 
-PORT = int(os.environ.get("PORT", 5000))
+PORT = int(os.environ.get("PORT", 5000))  # Render provides this automatically
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
@@ -71,12 +71,7 @@ def send_whatsapp(mobile, message):
         response = requests.post(WAHA_API_URL, json=payload, headers=headers)
         result = response.json()
         logging.info(f"WAHA response for {mobile}: {result}")
-
-        if result.get("sent") is True:
-            return {"success": True}
-        else:
-            return {"error": result.get("error", "Unknown error")}
-
+        return result
     except Exception as e:
         logging.error(f"WAHA error for {mobile}: {e}")
         return {"error": str(e)}
@@ -148,18 +143,22 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Error processing file: {e}")
 
-# ---------------- TELEGRAM APP (ONE INSTANCE) ----------------
-tg_app = ApplicationBuilder().token(BOT_TOKEN).build()
-tg_app.add_handler(CommandHandler("start", start))
-tg_app.add_handler(MessageHandler(filters.Document.FileExtension("xlsx"), handle_file))
-
 # ---------------- FLASK WEBHOOK ----------------
 @app_flask.route(f"/{BOT_TOKEN}", methods=["POST"])
 def webhook():
     update = Update.de_json(request.get_json(force=True), bot)
-    asyncio.run(tg_app.process_update(update))
+    import asyncio
+    asyncio.run(handle_update(update))
     return "OK"
 
+async def handle_update(update):
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.Document.FileExtension("xlsx"), handle_file))
+    await app.update_queue.put(update)
+    await app.process_update(update)
+
+# ---------------- DUMMY HTTP SERVER FOR RENDER ----------------
 @app_flask.route("/", methods=["GET"])
 def home():
     return "Bot is running ✅"
